@@ -1,0 +1,2 @@
+  o Minor bugfixes:
+    - Provide better error message for GETINFO desc/(id|name) whenever microdescriptors are in use. Fixes #5847.
