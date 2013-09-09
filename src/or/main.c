@@ -1196,6 +1196,13 @@ rotate_onion_keys_callback(time_t now, const or_options_t *options)
   return 0;
 }
 
+static int
+reset_descriptor_download_failures_callback(time_t now, const or_options_t *options)
+{
+  router_reset_descriptor_download_failures();
+  return 0;
+}
+
 /** Callback function for a periodic event to take action.
 * Should return 0 if action was taken. */
 typedef int (*periodic_event_helper_t)(time_t now,
@@ -1232,6 +1239,7 @@ typedef struct periodic_event_item_t {
 static periodic_event_item_t periodic_events[] = {
   EVENT(check_listeners, 60),
   EVENT(rotate_onion_keys, MIN_ONION_KEY_LIFETIME),
+  EVENT(reset_descriptor_download_failures, DESCRIPTOR_FAILURE_RESET_INTERVAL),
   { NULL, 0, 0, NULL, NULL }
 };
 #undef EVENT
@@ -1370,9 +1378,8 @@ run_scheduled_events(time_t now)
   }
 
   if (time_to_reset_descriptor_failures < now) {
-    router_reset_descriptor_download_failures();
-    time_to_reset_descriptor_failures =
-      now + DESCRIPTOR_FAILURE_RESET_INTERVAL;
+    time_to_reset_descriptor_failures = INCREMENT_DELTA_AND_TEST(2,
+                                    now, DESCRIPTOR_FAILURE_RESET_INTERVAL);
   }
 
   if (options->UseBridges)
