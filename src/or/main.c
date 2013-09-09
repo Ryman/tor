@@ -1160,9 +1160,10 @@ get_signewnym_epoch(void)
 
 /** 3d. Every 60 seconds, we relaunch listeners if any died. */
 static int
-check_listeners_callback(time_t now)
+check_listeners_callback(time_t now, const or_options_t *options)
 {
   (void)now;
+  (void)options;
 
   if (!net_is_disabled()) {
     retry_all_listeners(NULL, NULL, 0);
@@ -1173,9 +1174,32 @@ check_listeners_callback(time_t now)
   return -1;
 }
 
+/** 1a. Every MIN_ONION_KEY_LIFETIME seconds, rotate the onion keys,
+   *  shut down and restart all cpuworkers, and update the directory if
+   *  necessary. */
+static int
+rotate_onion_keys_callback(time_t now, const or_options_t *options)
+{
+  (void)now;
+  if (!server_mode(options) || get_onion_key_set_at() >= now)
+    return -1;
+
+  log_info(LD_GENERAL,"Rotating onion key.");
+  rotate_onion_key();
+  cpuworkers_rotate();
+  if (router_rebuild_descriptor(1)<0) {
+    log_info(LD_CONFIG, "Couldn't rebuild router descriptor");
+  }
+  if (advertised_server_mode() && !options->DisableNetwork)
+    router_upload_dir_desc_to_dirservers(0);
+
+  return 0;
+}
+
 /** Callback function for a periodic event to take action.
 * Should return 0 if action was taken. */
-typedef int (*periodic_event_helper_t)(time_t now);
+typedef int (*periodic_event_helper_t)(time_t now,
+                                      const or_options_t *options);
 
 /** A single item for the periodic-events-function table. */
 typedef struct periodic_event_item_t {
@@ -1207,6 +1231,7 @@ typedef struct periodic_event_item_t {
 * Ordering is important if events have the same interval time. */
 static periodic_event_item_t periodic_events[] = {
   EVENT(check_listeners, 60),
+  EVENT(rotate_onion_keys, MIN_ONION_KEY_LIFETIME),
   { NULL, 0, 0, NULL, NULL }
 };
 #undef EVENT
@@ -1220,7 +1245,8 @@ periodic_event_dispatch(periodic_timer_t *timer, void *data)
   periodic_event_item_t *event = data;
 
   time_t now = time(NULL);
-  int r = event->fn(now);
+  const or_options_t *options = get_options();
+  int r = event->fn(now, options);
 
   // Update the last run time if action was taken
   if (r == 0) {
@@ -1238,7 +1264,6 @@ periodic_event_initial_dispatch(evutil_socket_t fd, short events, void *arg)
   (void)fd;
   (void)events;
   (void)arg;
-  time_t now = time(NULL);
   int i;
 
   for (i = 0; periodic_events[i].fn; ++i) {
@@ -1331,14 +1356,8 @@ run_scheduled_events(time_t now)
    */
   if (is_server &&
       get_onion_key_set_at()+MIN_ONION_KEY_LIFETIME < now) {
-    log_info(LD_GENERAL,"Rotating onion key.");
-    rotate_onion_key();
-    cpuworkers_rotate();
-    if (router_rebuild_descriptor(1)<0) {
-      log_info(LD_CONFIG, "Couldn't rebuild router descriptor");
-    }
-    if (advertised_server_mode() && !options->DisableNetwork)
-      router_upload_dir_desc_to_dirservers(0);
+    time_t ignore = INCREMENT_DELTA_AND_TEST(1, now, MIN_ONION_KEY_LIFETIME)
+    (void)ignore;
   }
 
   if (!options->DisableNetwork && time_to_try_getting_descriptors < now) {
