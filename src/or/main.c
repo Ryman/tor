@@ -1158,6 +1158,112 @@ get_signewnym_epoch(void)
   return newnym_epoch;
 }
 
+/** 3d. Every 60 seconds, we relaunch listeners if any died. */
+static int
+check_listeners_callback(time_t now)
+{
+  (void)now;
+
+  if (!net_is_disabled()) {
+    retry_all_listeners(NULL, NULL, 0);
+    return 0;
+  }
+
+  // No action taken
+  return -1;
+}
+
+/** Callback function for a periodic event to take action.
+* Should return 0 if action was taken. */
+typedef int (*periodic_event_helper_t)(time_t now);
+
+/** A single item for the periodic-events-function table. */
+typedef struct periodic_event_item_t {
+  periodic_event_helper_t fn; /**< The function to run the event */
+  int interval; /**< The interval for running the function (In seconds). */
+  time_t lastActionTime; /**< The last time the function did something */
+  periodic_timer_t *timer; /**< Timer object for this event */
+  const char* name; /**< Name of the function -- for debug */
+} periodic_event_item_t;
+
+/** Refactor test, check the lastActionTime was now or (now - 60 - 1)
+* It returns an incremented <b>now</b> value and accounts for the current
+* implementation's off by one error in it's comparisons. */
+#define INCREMENT_DELTA_AND_TEST(id, now, delta) \
+    now + delta; \
+    periodic_event_item_t *ev = &periodic_events[id]; \
+    if (ev->lastActionTime != now - delta - 1 && \
+        ev->lastActionTime != now) { \
+      log_err(LD_BUG, "[Refactor Bug] Missed an interval " \
+        "for %s, Got %lu, wanted %lu or %lu.", ev->name, \
+        ev->lastActionTime, now, now-delta); \
+      exit(0); \
+    } \
+
+/** Currently using <b>interval</b> +1 to mimic current behaviour */
+#define EVENT(fn, interval) { fn##_callback, (interval + 1), 0, NULL, #fn }
+
+/** Table mapping events to their required interval.
+* Ordering is important if events have the same interval time. */
+static periodic_event_item_t periodic_events[] = {
+  EVENT(check_listeners, 60),
+  { NULL, 0, 0, NULL, NULL }
+};
+#undef EVENT
+
+/** Wraps dispatches for periodic events, <b>data</b> will be a pointer to the
+* event that needs to be called */
+static void
+periodic_event_dispatch(periodic_timer_t *timer, void *data)
+{
+  (void) timer;
+  periodic_event_item_t *event = data;
+
+  time_t now = time(NULL);
+  int r = event->fn(now);
+
+  // Update the last run time if action was taken
+  if (r == 0) {
+    event->lastActionTime = now;
+  }
+
+  log_info(LD_GENERAL, "Dispatching %s", event->name);
+}
+
+/** Handles initial dispatch for periodic events. It should happen 1 second
+* after the events are created to mimic behaviour before #3199's refactor */
+static void
+periodic_event_initial_dispatch(evutil_socket_t fd, short events, void *arg)
+{
+  (void)fd;
+  (void)events;
+  (void)arg;
+  time_t now = time(NULL);
+  int i;
+
+  for (i = 0; periodic_events[i].fn; ++i) {
+    if (periodic_events[i].timer) { /** Already setup? This is a bug */
+      log_err(LD_BUG, "Initial dispatch should only be done once.");
+      exit(0);
+    }
+
+    struct timeval interval;
+    interval.tv_sec = periodic_events[i].interval;
+    interval.tv_usec = 0;
+
+    void * data = (void *)&periodic_events[i];
+    periodic_timer_t *timer = periodic_timer_new(tor_libevent_get_base(),
+                                                  &interval,
+                                                  periodic_event_dispatch,
+                                                  data);
+    tor_assert(timer);
+    periodic_events[i].timer = timer;
+
+    // Initial dispatch
+    periodic_event_dispatch(timer, data);
+  }
+}
+
 /** Perform regular maintenance tasks.  This function gets run once per
  * second by second_elapsed_callback().
  */
@@ -1504,8 +1610,7 @@ run_scheduled_events(time_t now)
 
   /** 3d. And every 60 seconds, we relaunch listeners if any died. */
   if (!net_is_disabled() && time_to_check_listeners < now) {
-    retry_all_listeners(NULL, NULL, 0);
-    time_to_check_listeners = now+60;
+    time_to_check_listeners = INCREMENT_DELTA_AND_TEST(0, now, 60);
   }
 
   /** 4. Every second, we try a new circuit if there are no valid
@@ -1965,6 +2070,25 @@ do_main_loop(void)
   if (server_mode(get_options())) {
     /* launch cpuworkers. Need to do this *after* we've read the onion key. */
     cpu_init();
+  }
+
+  /** set up periodic events */
+  if (periodic_events[0].fn && !periodic_events[0].timer) {
+    /** queue initial dispatch to one second from now to mimic current */
+    struct event *ev = event_new(tor_libevent_get_base(),
+                                  -1,
+                                  0,
+                                  periodic_event_initial_dispatch,
+                                  NULL);
+    tor_assert(ev);
+    struct timeval timeout;
+    timeout.tv_sec = 1;
+    timeout.tv_usec = 0;
+
+    if (event_add(ev, &timeout)) {
+      log_err(LD_BUG, "Failed to setup periodic events.");
+      return -1;
+    }
   }
 
   /* set up once-a-second callback. */
@@ -2534,6 +2658,13 @@ tor_free_all(int postfork)
   smartlist_free(closeable_connection_lst);
   smartlist_free(active_linked_connection_lst);
   periodic_timer_free(second_timer);
+
+  int i;
+  for (i = 0; periodic_events[i].fn; ++i) {
+    periodic_timer_free(periodic_events[i].timer);
+    //tor_free(periodic_events[i].name);
+  }
+
 #ifndef USE_BUFFEREVENTS
   periodic_timer_free(refill_timer);
 #endif
