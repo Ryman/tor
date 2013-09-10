@@ -528,6 +528,20 @@ periodic_timer_cb(evutil_socket_t fd, short what, void *arg)
   timer->cb(timer, timer->data);
 }
 
+/** Update the interval for a periodic event. Returns 0 if successful. */
+int
+periodic_timer_update_interval(periodic_timer_t *timer, 
+                                const struct timeval *tv)
+{
+  tor_assert(timer);
+  tor_assert(tv);
+#ifndef HAVE_PERIODIC
+  memcpy(&timer->tv, tv, sizeof(struct timeval));
+#endif
+  return event_add(timer->ev, tv);
+}
+
+
 /** Create and schedule a new timer that will run every <b>tv</b> in
  * the event loop of <b>base</b>.  When the timer fires, it will
  * run the timer in <b>cb</b> with the user-supplied data in <b>data</b>. */
