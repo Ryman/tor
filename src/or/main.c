@@ -1336,6 +1336,24 @@ add_entropy_callback(time_t now, const or_options_t *options)
   return 0;
 }
 
+#define CHECK_EXPIRED_NS_INTERVAL (2*60)
+/* 1f. Check whether our networkstatus has expired. */
+static int
+check_expired_network_status_callback(time_t now, const or_options_t *options)
+{
+  networkstatus_t *ns = networkstatus_get_latest_consensus();
+  /*XXXX RD: This value needs to be the same as REASONABLY_LIVE_TIME in
+   * networkstatus_get_reasonably_live_consensus(), but that value is way
+   * way too high.  Arma: is the bridge issue there resolved yet? -NM */
+#define NS_EXPIRY_SLOP (24*60*60)
+  if (ns && ns->valid_until < now+NS_EXPIRY_SLOP &&
+      router_have_minimum_dir_info()) {
+    router_dir_info_changed();
+  }
+
+  return 0;
+}
+
 /** Callback function for a periodic event to take action.
 * Return -1 to not update <b>lastActionTime</b>. If a
 * positive value is returned it will update the interval time. */
@@ -1383,6 +1401,7 @@ static periodic_event_item_t periodic_events[] = {
   EVENT(downrate_stability, 0),
   EVENT(save_stability, SAVE_STABILITY_INTERVAL),
   EVENT(add_entropy, ENTROPY_INTERVAL),
+  EVENT(check_expired_network_status, CHECK_EXPIRED_NS_INTERVAL),
   { NULL, 0, 0, NULL, NULL }
 };
 #undef EVENT
@@ -1597,17 +1616,8 @@ run_scheduled_events(time_t now)
   /* 1f. Check whether our networkstatus has expired.
    */
   if (time_to_check_for_expired_networkstatus < now) {
-    networkstatus_t *ns = networkstatus_get_latest_consensus();
-    /*XXXX RD: This value needs to be the same as REASONABLY_LIVE_TIME in
-     * networkstatus_get_reasonably_live_consensus(), but that value is way
-     * way too high.  Arma: is the bridge issue there resolved yet? -NM */
-#define NS_EXPIRY_SLOP (24*60*60)
-    if (ns && ns->valid_until < now+NS_EXPIRY_SLOP &&
-        router_have_minimum_dir_info()) {
-      router_dir_info_changed();
-    }
-#define CHECK_EXPIRED_NS_INTERVAL (2*60)
-    time_to_check_for_expired_networkstatus = now + CHECK_EXPIRED_NS_INTERVAL;
+    time_to_check_for_expired_networkstatus = INCREMENT_DELTA_AND_TEST(12, now,
+                                                    CHECK_EXPIRED_NS_INTERVAL);
   }
 
   /* 1g. Check whether we should write statistics to disk.
