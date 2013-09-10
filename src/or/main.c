@@ -1216,8 +1216,24 @@ retry_dns_init_callback(time_t now, const or_options_t *options)
   return -1;
 }
 
+static int
+try_getting_descriptors_callback(time_t now, const or_options_t *options)
+{
+  if (options->DisableNetwork)
+    return -1;
+
+  update_all_descriptor_downloads(now);
+  update_extrainfo_downloads(now);
+
+  if (router_have_minimum_dir_info())
+    return LAZY_DESCRIPTOR_RETRY_INTERVAL + 1; /** account for off by one */
+  else
+    return GREEDY_DESCRIPTOR_RETRY_INTERVAL + 1; /** account for off by one */
+}
+
 /** Callback function for a periodic event to take action.
-* Should return 0 if action was taken. */
+* Return -1 to not update <b>lastActionTime</b>. If a 
+* positive value is returned it will update the interval time. */
 typedef int (*periodic_event_helper_t)(time_t now,
                                       const or_options_t *options);
 
@@ -1254,6 +1270,7 @@ static periodic_event_item_t periodic_events[] = {
   EVENT(rotate_onion_keys, MIN_ONION_KEY_LIFETIME),
   EVENT(reset_descriptor_download_failures, DESCRIPTOR_FAILURE_RESET_INTERVAL),
   EVENT(retry_dns_init, RETRY_DNS_INTERVAL),
+  EVENT(try_getting_descriptors, GREEDY_DESCRIPTOR_RETRY_INTERVAL),
   { NULL, 0, 0, NULL, NULL }
 };
 #undef EVENT
@@ -1270,9 +1287,17 @@ periodic_event_dispatch(periodic_timer_t *timer, void *data)
   const or_options_t *options = get_options();
   int r = event->fn(now, options);
 
-  // Update the last run time if action was taken
-  if (r == 0) {
+  /** update the last run time if action was taken */
+  if (r >= 0) {
     event->lastActionTime = now;
+
+    /** update the interval time */
+    if (r > 0) {
+      struct timeval tv;
+      tv.tv_sec = r;
+      tv.tv_usec = 0;
+      periodic_timer_update_interval(event->timer, &tv);
+    }
   }
 
   log_info(LD_GENERAL, "Dispatching %s", event->name);
@@ -1378,17 +1403,18 @@ run_scheduled_events(time_t now)
    */
   if (is_server &&
       get_onion_key_set_at()+MIN_ONION_KEY_LIFETIME < now) {
-    time_t ignore = INCREMENT_DELTA_AND_TEST(1, now, MIN_ONION_KEY_LIFETIME)
+    time_t ignore = INCREMENT_DELTA_AND_TEST(1, now, MIN_ONION_KEY_LIFETIME);
     (void)ignore;
   }
 
   if (!options->DisableNetwork && time_to_try_getting_descriptors < now) {
-    update_all_descriptor_downloads(now);
-    update_extrainfo_downloads(now);
-    if (router_have_minimum_dir_info())
-      time_to_try_getting_descriptors = now + LAZY_DESCRIPTOR_RETRY_INTERVAL;
-    else
-      time_to_try_getting_descriptors = now + GREEDY_DESCRIPTOR_RETRY_INTERVAL;
+    if (router_have_minimum_dir_info()) {
+      time_to_try_getting_descriptors = INCREMENT_DELTA_AND_TEST(4, now,
+                                          LAZY_DESCRIPTOR_RETRY_INTERVAL);
+    } else {
+      time_to_try_getting_descriptors = INCREMENT_DELTA_AND_TEST(4, now,
+                                          GREEDY_DESCRIPTOR_RETRY_INTERVAL);
+    }
   }
 
   if (time_to_reset_descriptor_failures < now) {
