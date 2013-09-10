@@ -1279,6 +1279,16 @@ shrink_memory_callback(time_t now, const or_options_t *options)
   return 0;
 }
 
+#define CHECK_V3_CERTIFICATE_INTERVAL (5*60)
+/* 1e. Periodically, if we're a v3 authority, we check whether our cert is
+   * close to expiring and warn the admin if it is. */
+static int
+check_v3_certificate_callback(time_t now, const or_options_t *options)
+{
+  v3_authority_check_key_expiry();
+  return 0;
+}
+
 /** Callback function for a periodic event to take action.
 * Return -1 to not update <b>lastActionTime</b>. If a
 * positive value is returned it will update the interval time. */
@@ -1322,6 +1332,7 @@ static periodic_event_item_t periodic_events[] = {
   EVENT(launch_reachability_tests, REACHABILITY_TEST_INTERVAL),
   EVENT(download_network_status, 0),
   EVENT(shrink_memory, MEM_SHRINK_INTERVAL),
+  EVENT(check_v3_certificate, CHECK_V3_CERTIFICATE_INTERVAL),
   { NULL, 0, 0, NULL, NULL }
 };
 #undef EVENT
@@ -1532,9 +1543,8 @@ run_scheduled_events(time_t now)
   /* 1e. Periodically, if we're a v3 authority, we check whether our cert is
    * close to expiring and warn the admin if it is. */
   if (time_to_check_v3_certificate < now) {
-    v3_authority_check_key_expiry();
-#define CHECK_V3_CERTIFICATE_INTERVAL (5*60)
-    time_to_check_v3_certificate = now + CHECK_V3_CERTIFICATE_INTERVAL;
+    time_to_check_v3_certificate = INCREMENT_DELTA_AND_TEST(8, now,
+                                              CHECK_V3_CERTIFICATE_INTERVAL);
   }
 
   /* 1f. Check whether our networkstatus has expired.
