@@ -1366,6 +1366,32 @@ clean_caches_callback(time_t now, const or_options_t *options)
   return 0;
 }
 
+/** 1b. Every MAX_SSL_KEY_LIFETIME_INTERNAL seconds, we change our
+   * TLS context. */
+static int
+rotate_x509_certificate_callback(time_t now, const or_options_t *options)
+{
+  static time_t ran_once = 0;
+
+  if (ran_once) {
+    log_info(LD_GENERAL,"Rotating tls context.");
+    if (router_initialize_tls_context() < 0) {
+      log_warn(LD_BUG, "Error reinitializing TLS context");
+      /* XXX is it a bug here, that we just keep going? -RD */
+    }
+    /* We also make sure to rotate the TLS connections themselves if they've
+     * been up for too long -- but that's done via is_bad_for_new_circs in
+     * connection_run_housekeeping() above. */
+  } else {
+    ran_once = 1;
+    /* should return -1 since no action was taken, but the old implementation
+    * isn't written the same as the rest of the events so just return 0 to
+    * update the timer anyway. */
+  }
+
+   return 0;
+}
+
 /** Callback function for a periodic event to take action.
 * Return -1 to not update <b>lastActionTime</b>. If a
 * positive value is returned it will update the interval time. */
@@ -1415,6 +1441,7 @@ static periodic_event_item_t periodic_events[] = {
   EVENT(add_entropy, ENTROPY_INTERVAL),
   EVENT(check_expired_network_status, CHECK_EXPIRED_NS_INTERVAL),
   EVENT(clean_caches, CLEAN_CACHES_INTERVAL),
+  EVENT(rotate_x509_certificate, MAX_SSL_KEY_LIFETIME_INTERNAL),
   { NULL, 0, 0, NULL, NULL }
 };
 #undef EVENT
@@ -1574,15 +1601,9 @@ run_scheduled_events(time_t now)
   if (!last_rotated_x509_certificate)
     last_rotated_x509_certificate = now;
   if (last_rotated_x509_certificate+MAX_SSL_KEY_LIFETIME_INTERNAL < now) {
-    log_info(LD_GENERAL,"Rotating tls context.");
-    if (router_initialize_tls_context() < 0) {
-      log_warn(LD_BUG, "Error reinitializing TLS context");
-      /* XXX is it a bug here, that we just keep going? -RD */
-    }
+    time_t ignore = INCREMENT_DELTA_AND_TEST(14, now, MAX_SSL_KEY_LIFETIME_INTERNAL);
+    (void)ignore;
     last_rotated_x509_certificate = now;
-    /* We also make sure to rotate the TLS connections themselves if they've
-     * been up for too long -- but that's done via is_bad_for_new_circs in
-     * connection_run_housekeeping() above. */
   }
 
   if (time_to_add_entropy < now) {
