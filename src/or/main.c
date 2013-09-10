@@ -1289,6 +1289,34 @@ check_v3_certificate_callback(time_t now, const or_options_t *options)
   return 0;
 }
 
+/** 1d. Periodically, we discount older stability information so that new
+   * stability info counts more. */
+static int
+downrate_stability_callback(time_t now, const or_options_t *options)
+{
+  /** account for off by one */
+  return rep_hist_downrate_old_runs(now) + 1;
+}
+
+#define SAVE_STABILITY_INTERVAL (30*60)
+/** Periodically save the stability information to disk as appropriate. */
+static int
+save_stability_callback(time_t now, const or_options_t *options)
+{
+  static int ran_once = 0;
+
+  if (authdir_mode_tests_reachability(options)) {
+    if (ran_once && rep_hist_record_mtbf_data(now, 1) < 0) {
+      log_warn(LD_GENERAL, "Couldn't store mtbf data.");
+    }
+
+    ran_once = 1;
+    return 0;
+  }
+
+  return -1;
+}
+
 /** Callback function for a periodic event to take action.
 * Return -1 to not update <b>lastActionTime</b>. If a
 * positive value is returned it will update the interval time. */
@@ -1333,6 +1361,8 @@ static periodic_event_item_t periodic_events[] = {
   EVENT(download_network_status, 0),
   EVENT(shrink_memory, MEM_SHRINK_INTERVAL),
   EVENT(check_v3_certificate, CHECK_V3_CERTIFICATE_INTERVAL),
+  EVENT(downrate_stability, 0),
+  EVENT(save_stability, SAVE_STABILITY_INTERVAL),
   { NULL, 0, 0, NULL, NULL }
 };
 #undef EVENT
@@ -1528,15 +1558,18 @@ run_scheduled_events(time_t now)
   /** 1d. Periodically, we discount older stability information so that new
    * stability info counts more, and save the stability information to disk as
    * appropriate. */
-  if (time_to_downrate_stability < now)
-    time_to_downrate_stability = rep_hist_downrate_old_runs(now);
+  if (time_to_downrate_stability < now) {
+    /** NOTE: This refactor test is more fragile than others, relies on
+    * rep_hist_downrate_old_runs giving us the last time it refreshed if
+    * we feed it a time before its refresh time */
+    time_to_downrate_stability = INCREMENT_DELTA_AND_TEST(9, now,
+                                        rep_hist_downrate_old_runs(0));
+  }
+
   if (authdir_mode_tests_reachability(options)) {
     if (time_to_save_stability < now) {
-      if (time_to_save_stability && rep_hist_record_mtbf_data(now, 1)<0) {
-        log_warn(LD_GENERAL, "Couldn't store mtbf data.");
-      }
-#define SAVE_STABILITY_INTERVAL (30*60)
-      time_to_save_stability = now + SAVE_STABILITY_INTERVAL;
+      time_to_save_stability = INCREMENT_DELTA_AND_TEST(10, now,
+                                                  SAVE_STABILITY_INTERVAL);
     }
   }
 
