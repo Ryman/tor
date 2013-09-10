@@ -1197,7 +1197,8 @@ rotate_onion_keys_callback(time_t now, const or_options_t *options)
 }
 
 static int
-reset_descriptor_download_failures_callback(time_t now, const or_options_t *options)
+reset_descriptor_download_failures_callback(time_t now,
+                                            const or_options_t *options)
 {
   router_reset_descriptor_download_failures();
   return 0;
@@ -1231,8 +1232,21 @@ try_getting_descriptors_callback(time_t now, const or_options_t *options)
     return GREEDY_DESCRIPTOR_RETRY_INTERVAL + 1; /** account for off by one */
 }
 
+/* Periodically try to determine reachability of the other Tor relays */
+static int
+launch_reachability_tests_callback(time_t now, const or_options_t *options)
+{
+  if (authdir_mode_tests_reachability(options) &&
+      !net_is_disabled()) {
+    dirserv_test_reachability(now);
+    return 0;
+  }
+
+  return -1;
+}
+
 /** Callback function for a periodic event to take action.
-* Return -1 to not update <b>lastActionTime</b>. If a 
+* Return -1 to not update <b>lastActionTime</b>. If a
 * positive value is returned it will update the interval time. */
 typedef int (*periodic_event_helper_t)(time_t now,
                                       const or_options_t *options);
@@ -1271,6 +1285,7 @@ static periodic_event_item_t periodic_events[] = {
   EVENT(reset_descriptor_download_failures, DESCRIPTOR_FAILURE_RESET_INTERVAL),
   EVENT(retry_dns_init, RETRY_DNS_INTERVAL),
   EVENT(try_getting_descriptors, GREEDY_DESCRIPTOR_RETRY_INTERVAL),
+  EVENT(launch_reachability_tests, REACHABILITY_TEST_INTERVAL),
   { NULL, 0, 0, NULL, NULL }
 };
 #undef EVENT
@@ -1459,9 +1474,8 @@ run_scheduled_events(time_t now)
   if (time_to_launch_reachability_tests < now &&
       (authdir_mode_tests_reachability(options)) &&
        !net_is_disabled()) {
-    time_to_launch_reachability_tests = now + REACHABILITY_TEST_INTERVAL;
-    /* try to determine reachability of the other Tor relays */
-    dirserv_test_reachability(now);
+    time_to_launch_reachability_tests = INCREMENT_DELTA_AND_TEST(5, now,
+                                                REACHABILITY_TEST_INTERVAL);
   }
 
   /** 1d. Periodically, we discount older stability information so that new
@@ -1583,7 +1597,8 @@ run_scheduled_events(time_t now)
   /* If we're a server and initializing dns failed, retry periodically. */
   if (time_to_retry_dns_init < now) {
     if (is_server && has_dns_init_failed()) {
-      time_to_retry_dns_init = INCREMENT_DELTA_AND_TEST(3, now, RETRY_DNS_INTERVAL)
+      time_to_retry_dns_init = INCREMENT_DELTA_AND_TEST(3, now,
+                                                        RETRY_DNS_INTERVAL)
     }
   }
 
