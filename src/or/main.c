@@ -1392,6 +1392,35 @@ rotate_x509_certificate_callback(time_t now, const or_options_t *options)
    return 0;
 }
 
+/* 1h. Check whether we should write bridge statistics to disk.
+   */
+static int
+write_bridge_stats_callback(time_t now, const or_options_t *options)
+{
+  static int should_init_bridge_stats = 1;
+
+  if (should_record_bridge_info(options)) {
+    if (should_init_bridge_stats) {
+      /* (Re-)initialize bridge statistics. */
+      geoip_bridge_stats_init(now);
+      should_init_bridge_stats = 0;
+      /** account for off by one */
+      return WRITE_STATS_INTERVAL + 1;
+    } else {
+      /* Possibly write bridge statistics to disk and ask when to write
+       * them next time. */
+      /** Account for off by one */
+      return geoip_bridge_stats_write(now) + 1;
+    }
+  } else if (!should_init_bridge_stats) {
+    /* Bridge mode was turned off. Ensure that stats are re-initialized
+     * next time bridge mode is turned on. */
+    should_init_bridge_stats = 1;
+  }
+
+  return -1;
+}
+
 /** Callback function for a periodic event to take action.
 * Return -1 to not update <b>lastActionTime</b>. If a
 * positive value is returned it will update the interval time. */
@@ -1425,7 +1454,10 @@ typedef struct periodic_event_item_t {
 #define EVENT(fn, interval) { fn##_callback, (interval + 1), 0, NULL, #fn }
 
 /** Table mapping events to their required interval.
-* Ordering is important if events have the same interval time. */
+* Ordering is important if events have the same interval time.
+* Currently an interval of 0  will cause polling every 1 second
+* until the callback changes the interval time.
+* (0=1 is to account for the off by one error in other events) */
 static periodic_event_item_t periodic_events[] = {
   EVENT(check_listeners, 60),
   EVENT(rotate_onion_keys, MIN_ONION_KEY_LIFETIME),
@@ -1442,6 +1474,7 @@ static periodic_event_item_t periodic_events[] = {
   EVENT(check_expired_network_status, CHECK_EXPIRED_NS_INTERVAL),
   EVENT(clean_caches, CLEAN_CACHES_INTERVAL),
   EVENT(rotate_x509_certificate, MAX_SSL_KEY_LIFETIME_INTERNAL),
+  EVENT(write_bridge_stats, 0),
   { NULL, 0, 0, NULL, NULL }
 };
 #undef EVENT
@@ -1704,21 +1737,23 @@ run_scheduled_events(time_t now)
   if (should_record_bridge_info(options)) {
     if (time_to_write_bridge_stats < now) {
       if (should_init_bridge_stats) {
-        /* (Re-)initialize bridge statistics. */
-        geoip_bridge_stats_init(now);
-        time_to_write_bridge_stats = now + WRITE_STATS_INTERVAL;
+        time_to_write_bridge_stats = INCREMENT_DELTA_AND_TEST(15, now, WRITE_STATS_INTERVAL);
         should_init_bridge_stats = 0;
       } else {
-        /* Possibly write bridge statistics to disk and ask when to write
-         * them next time. */
-        time_to_write_bridge_stats = geoip_bridge_stats_write(
-                                           time_to_write_bridge_stats);
+        /** NOTE: This refactor test is more fragile than others, relies on
+        * geoip_bridge_stats_write giving us the last time it refreshed if
+        * we feed it a time before its refresh time */
+        time_to_write_bridge_stats = INCREMENT_DELTA_AND_TEST(15, now, geoip_bridge_stats_write(0));
       }
     }
   } else if (!should_init_bridge_stats) {
     /* Bridge mode was turned off. Ensure that stats are re-initialized
      * next time bridge mode is turned on. */
     should_init_bridge_stats = 1;
+
+    /* Expect to be polled every second */
+    time_t ignore = INCREMENT_DELTA_AND_TEST(15, now, 1)
+    (void)ignore;
   }
 
   /* Remove old information from rephist and the rend cache. */
