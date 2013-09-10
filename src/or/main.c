@@ -1245,6 +1245,23 @@ launch_reachability_tests_callback(time_t now, const or_options_t *options)
   return -1;
 }
 
+/* How often do we check whether we should download network status
+ * documents? */
+#define networkstatus_dl_check_interval(o) ((o)->TestingTorNetwork ? 1 : 60)
+
+/* 2c. Every minute (or every second if TestingTorNetwork), check
+   * whether we want to download any networkstatus documents. */
+static int
+download_network_status_callback(time_t now, const or_options_t *options)
+{
+  if (!options->DisableNetwork) {
+    update_networkstatus_downloads(now);
+    /** account for off by one */
+    return networkstatus_dl_check_interval(options) + 1;
+  }
+  return -1;
+}
+
 /** Callback function for a periodic event to take action.
 * Return -1 to not update <b>lastActionTime</b>. If a
 * positive value is returned it will update the interval time. */
@@ -1286,6 +1303,7 @@ static periodic_event_item_t periodic_events[] = {
   EVENT(retry_dns_init, RETRY_DNS_INTERVAL),
   EVENT(try_getting_descriptors, GREEDY_DESCRIPTOR_RETRY_INTERVAL),
   EVENT(launch_reachability_tests, REACHABILITY_TEST_INTERVAL),
+  EVENT(download_network_status, 0),
   { NULL, 0, 0, NULL, NULL }
 };
 #undef EVENT
@@ -1306,8 +1324,8 @@ periodic_event_dispatch(periodic_timer_t *timer, void *data)
   if (r >= 0) {
     event->lastActionTime = now;
 
-    /** update the interval time */
-    if (r > 0) {
+    /** update the interval time if it's changed */
+    if (r > 0 && r != event->interval) {
       struct timeval tv;
       tv.tv_sec = r;
       tv.tv_usec = 0;
@@ -1653,15 +1671,9 @@ run_scheduled_events(time_t now)
 
   /* 2c. Every minute (or every second if TestingTorNetwork), check
    * whether we want to download any networkstatus documents. */
-
-/* How often do we check whether we should download network status
- * documents? */
-#define networkstatus_dl_check_interval(o) ((o)->TestingTorNetwork ? 1 : 60)
-
   if (time_to_download_networkstatus < now && !options->DisableNetwork) {
-    time_to_download_networkstatus =
-      now + networkstatus_dl_check_interval(options);
-    update_networkstatus_downloads(now);
+    time_to_download_networkstatus = INCREMENT_DELTA_AND_TEST(6, now,
+                                  networkstatus_dl_check_interval(options))
   }
 
   /** 2c. Let directory voting happen. */
