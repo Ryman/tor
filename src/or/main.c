@@ -1317,6 +1317,25 @@ save_stability_callback(time_t now, const or_options_t *options)
   return -1;
 }
 
+/** How often do we add more entropy to OpenSSL's RNG pool? */
+#define ENTROPY_INTERVAL (60*60)
+
+/** Periodically reseed the rng */
+static int
+add_entropy_callback(time_t now, const or_options_t *options)
+{
+  static int ran_once = 0;
+
+  if (ran_once) {
+    /* We already seeded once, so don't die on failure. */
+    crypto_seed_rng(0);
+  } else {
+    ran_once = 1;
+  }
+
+  return 0;
+}
+
 /** Callback function for a periodic event to take action.
 * Return -1 to not update <b>lastActionTime</b>. If a
 * positive value is returned it will update the interval time. */
@@ -1363,6 +1382,7 @@ static periodic_event_item_t periodic_events[] = {
   EVENT(check_v3_certificate, CHECK_V3_CERTIFICATE_INTERVAL),
   EVENT(downrate_stability, 0),
   EVENT(save_stability, SAVE_STABILITY_INTERVAL),
+  EVENT(add_entropy, ENTROPY_INTERVAL),
   { NULL, 0, 0, NULL, NULL }
 };
 #undef EVENT
@@ -1534,13 +1554,7 @@ run_scheduled_events(time_t now)
   }
 
   if (time_to_add_entropy < now) {
-    if (time_to_add_entropy) {
-      /* We already seeded once, so don't die on failure. */
-      crypto_seed_rng(0);
-    }
-/** How often do we add more entropy to OpenSSL's RNG pool? */
-#define ENTROPY_INTERVAL (60*60)
-    time_to_add_entropy = now + ENTROPY_INTERVAL;
+    time_to_add_entropy = INCREMENT_DELTA_AND_TEST(11, now, ENTROPY_INTERVAL);
   }
 
   /** 1c. If we have to change the accounting interval or record
