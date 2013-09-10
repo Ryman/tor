@@ -1262,6 +1262,23 @@ download_network_status_callback(time_t now, const or_options_t *options)
   return -1;
 }
 
+/** How often do we check buffers and pools for empty space that can be
+ * deallocated? */
+#define MEM_SHRINK_INTERVAL (60)
+static int
+shrink_memory_callback(time_t now, const or_options_t *options)
+{
+  SMARTLIST_FOREACH(connection_array, connection_t *, conn, {
+      if (conn->outbuf)
+        buf_shrink(conn->outbuf);
+      if (conn->inbuf)
+        buf_shrink(conn->inbuf);
+    });
+  clean_cell_pool();
+  buf_shrink_freelists(0);
+  return 0;
+}
+
 /** Callback function for a periodic event to take action.
 * Return -1 to not update <b>lastActionTime</b>. If a
 * positive value is returned it will update the interval time. */
@@ -1304,6 +1321,7 @@ static periodic_event_item_t periodic_events[] = {
   EVENT(try_getting_descriptors, GREEDY_DESCRIPTOR_RETRY_INTERVAL),
   EVENT(launch_reachability_tests, REACHABILITY_TEST_INTERVAL),
   EVENT(download_network_status, 0),
+  EVENT(shrink_memory, MEM_SHRINK_INTERVAL),
   { NULL, 0, 0, NULL, NULL }
 };
 #undef EVENT
@@ -1723,19 +1741,10 @@ run_scheduled_events(time_t now)
   for (i=0;i<smartlist_len(connection_array);i++) {
     run_connection_housekeeping(i, now);
   }
+
   if (time_to_shrink_memory < now) {
-    SMARTLIST_FOREACH(connection_array, connection_t *, conn, {
-        if (conn->outbuf)
-          buf_shrink(conn->outbuf);
-        if (conn->inbuf)
-          buf_shrink(conn->inbuf);
-      });
-    clean_cell_pool();
-    buf_shrink_freelists(0);
-/** How often do we check buffers and pools for empty space that can be
- * deallocated? */
-#define MEM_SHRINK_INTERVAL (60)
-    time_to_shrink_memory = now + MEM_SHRINK_INTERVAL;
+    time_to_shrink_memory = INCREMENT_DELTA_AND_TEST(7, now,
+                                                  MEM_SHRINK_INTERVAL);
   }
 
   /** 6. And remove any marked circuits... */
