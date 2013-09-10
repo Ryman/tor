@@ -1354,6 +1354,18 @@ check_expired_network_status_callback(time_t now, const or_options_t *options)
   return 0;
 }
 
+#define CLEAN_CACHES_INTERVAL (30*60)
+/* Periodically remove old information from rephist and the rend cache. */
+static int
+clean_caches_callback(time_t now, const or_options_t *options)
+{
+  rep_history_clean(now - options->RephistTrackTime);
+  rend_cache_clean(now);
+  rend_cache_clean_v2_descs_as_dir(now);
+  microdesc_cache_rebuild(NULL, 0);
+  return 0;
+}
+
 /** Callback function for a periodic event to take action.
 * Return -1 to not update <b>lastActionTime</b>. If a
 * positive value is returned it will update the interval time. */
@@ -1402,6 +1414,7 @@ static periodic_event_item_t periodic_events[] = {
   EVENT(save_stability, SAVE_STABILITY_INTERVAL),
   EVENT(add_entropy, ENTROPY_INTERVAL),
   EVENT(check_expired_network_status, CHECK_EXPIRED_NS_INTERVAL),
+  EVENT(clean_caches, CLEAN_CACHES_INTERVAL),
   { NULL, 0, 0, NULL, NULL }
 };
 #undef EVENT
@@ -1689,12 +1702,8 @@ run_scheduled_events(time_t now)
 
   /* Remove old information from rephist and the rend cache. */
   if (time_to_clean_caches < now) {
-    rep_history_clean(now - options->RephistTrackTime);
-    rend_cache_clean(now);
-    rend_cache_clean_v2_descs_as_dir(now);
-    microdesc_cache_rebuild(NULL, 0);
-#define CLEAN_CACHES_INTERVAL (30*60)
-    time_to_clean_caches = now + CLEAN_CACHES_INTERVAL;
+    time_to_clean_caches = INCREMENT_DELTA_AND_TEST(13, now,
+                                                    CLEAN_CACHES_INTERVAL);
   }
 
   /* If we're a server and initializing dns failed, retry periodically. */
