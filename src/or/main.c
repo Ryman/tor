@@ -1203,6 +1203,19 @@ reset_descriptor_download_failures_callback(time_t now, const or_options_t *opti
   return 0;
 }
 
+#define RETRY_DNS_INTERVAL (10*60)
+/* If we're a server and initializing dns failed, retry periodically. */
+static int
+retry_dns_init_callback(time_t now, const or_options_t *options)
+{
+  /** XXXX Should cancel the timer once this succeeds? */
+  if (server_mode(options) && has_dns_init_failed()) {
+    dns_init();
+    return 0;
+  }
+  return -1;
+}
+
 /** Callback function for a periodic event to take action.
 * Should return 0 if action was taken. */
 typedef int (*periodic_event_helper_t)(time_t now,
@@ -1240,6 +1253,7 @@ static periodic_event_item_t periodic_events[] = {
   EVENT(check_listeners, 60),
   EVENT(rotate_onion_keys, MIN_ONION_KEY_LIFETIME),
   EVENT(reset_descriptor_download_failures, DESCRIPTOR_FAILURE_RESET_INTERVAL),
+  EVENT(retry_dns_init, RETRY_DNS_INTERVAL),
   { NULL, 0, 0, NULL, NULL }
 };
 #undef EVENT
@@ -1540,12 +1554,11 @@ run_scheduled_events(time_t now)
     time_to_clean_caches = now + CLEAN_CACHES_INTERVAL;
   }
 
-#define RETRY_DNS_INTERVAL (10*60)
   /* If we're a server and initializing dns failed, retry periodically. */
   if (time_to_retry_dns_init < now) {
-    time_to_retry_dns_init = now + RETRY_DNS_INTERVAL;
-    if (is_server && has_dns_init_failed())
-      dns_init();
+    if (is_server && has_dns_init_failed()) {
+      time_to_retry_dns_init = INCREMENT_DELTA_AND_TEST(3, now, RETRY_DNS_INTERVAL)
+    }
   }
 
   /** 2. Periodically, we consider force-uploading our descriptor
