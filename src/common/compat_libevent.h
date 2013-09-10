@@ -50,7 +50,7 @@ periodic_timer_t *periodic_timer_new(struct event_base *base,
              const struct timeval *tv,
              void (*cb)(periodic_timer_t *timer, void *data),
              void *data);
-int periodic_timer_update_interval(periodic_timer_t *timer, 
+int periodic_timer_update_interval(periodic_timer_t *timer,
              const struct timeval *tv);
 void periodic_timer_free(periodic_timer_t *);
 
