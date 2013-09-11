@@ -1421,9 +1421,48 @@ write_bridge_stats_callback(time_t now, const or_options_t *options)
   return -1;
 }
 
+#define CHECK_WRITE_STATS_INTERVAL (60*60)
+/* 1g. Periodically check whether we should write statistics to disk. */
+static int
+write_stats_files_callback(time_t now, const or_options_t *options)
+{
+  time_t next_time = now + CHECK_WRITE_STATS_INTERVAL;
+
+#define TAKE_IF_BEFORE(a) next_time = a && a < next_time ? a : next_time
+  if (options->CellStatistics) {
+    TAKE_IF_BEFORE(rep_hist_buffer_stats_write(now));
+  }
+  if (options->DirReqStatistics) {
+    TAKE_IF_BEFORE(geoip_dirreq_stats_write(now));
+  }
+  if (options->EntryStatistics) {
+    TAKE_IF_BEFORE(geoip_entry_stats_write(now));
+  }
+  if (options->ExitPortStatistics) {
+    TAKE_IF_BEFORE(rep_hist_exit_stats_write(now));
+  }
+  if (options->ConnDirectionStatistics) {
+    TAKE_IF_BEFORE(rep_hist_conn_stats_write(now));
+  }
+  if (options->BridgeAuthoritativeDir) {
+    TAKE_IF_BEFORE(rep_hist_desc_stats_write(now));
+  }
+#undef TAKE_IF_BEFORE
+
+  /* Also commandeer this opportunity to log how our circuit handshake
+   * stats have been doing. */
+  if (public_server_mode(options))
+    rep_hist_log_circuit_handshake_stats(now);
+
+  /* Account for off by one */
+  return next_time + 1;
+}
+
 /** Callback function for a periodic event to take action.
 * Return -1 to not update <b>lastActionTime</b>. If a
-* positive value is returned it will update the interval time. */
+* positive value is returned it will update the interval time.
+* If the returned value is larger than <b>now</b> then it is
+* assumed to be a future time to poll again. */
 typedef int (*periodic_event_helper_t)(time_t now,
                                       const or_options_t *options);
 
@@ -1436,7 +1475,7 @@ typedef struct periodic_event_item_t {
   const char* name; /**< Name of the function -- for debug */
 } periodic_event_item_t;
 
-/** Refactor test, check the lastActionTime was now or (now - 60 - 1)
+/** Refactor test, check the lastActionTime was now or (now - delta - 1)
 * It returns an incremented <b>now</b> value and accounts for the current
 * implementation's off by one error in it's comparisons. */
 #define INCREMENT_DELTA_AND_TEST(id, now, delta) \
@@ -1447,6 +1486,14 @@ typedef struct periodic_event_item_t {
       log_err(LD_BUG, "[Refactor Bug] Missed an interval " \
         "for %s, Got %lu, wanted %lu or %lu.", ev->name, \
         ev->lastActionTime, now, now-delta); \
+      exit(0); \
+    } \
+
+#define PERIODIC_RANGE_TEST(id, start, end) \
+    periodic_event_item_t *ev = &periodic_events[id]; \
+    if (ev->lastActionTime < start-1 || ev->lastActionTime > end) { \
+      log_err(LD_BUG, "[Refactor Bug] Missed an interval in a range," \
+        "Got %lu, wanted %lu <= x <= %lu.", ev->lastActionTime, start, end); \
       exit(0); \
     } \
 
@@ -1475,6 +1522,7 @@ static periodic_event_item_t periodic_events[] = {
   EVENT(clean_caches, CLEAN_CACHES_INTERVAL),
   EVENT(rotate_x509_certificate, MAX_SSL_KEY_LIFETIME_INTERNAL),
   EVENT(write_bridge_stats, 0),
+  EVENT(write_stats_files, CHECK_WRITE_STATS_INTERVAL),
   { NULL, 0, 0, NULL, NULL }
 };
 #undef EVENT
@@ -1494,6 +1542,12 @@ periodic_event_dispatch(periodic_timer_t *timer, void *data)
   /** update the last run time if action was taken */
   if (r >= 0) {
     event->lastActionTime = now;
+
+    if (r >= now) {
+      /** The function returned a future time that it wants to be polled again
+      * at, subtract now to get the relative interval time */
+      r -= now;
+    }
 
     /** update the interval time if it's changed */
     if (r > 0 && r != event->interval) {
@@ -1660,10 +1714,9 @@ run_scheduled_events(time_t now)
    * appropriate. */
   if (time_to_downrate_stability < now) {
     /** NOTE: This refactor test is more fragile than others, relies on
-    * rep_hist_downrate_old_runs giving us the last time it refreshed if
-    * we feed it a time before its refresh time */
+    * implementation details of rep_hist_downrate_old_runs */
     time_to_downrate_stability = INCREMENT_DELTA_AND_TEST(9, now,
-                                        rep_hist_downrate_old_runs(0));
+                rep_hist_downrate_old_runs(now) - time_to_downrate_stability);
   }
 
   if (authdir_mode_tests_reachability(options)) {
@@ -1690,46 +1743,10 @@ run_scheduled_events(time_t now)
   /* 1g. Check whether we should write statistics to disk.
    */
   if (time_to_write_stats_files < now) {
-#define CHECK_WRITE_STATS_INTERVAL (60*60)
-    time_t next_time_to_write_stats_files = (time_to_write_stats_files > 0 ?
-           time_to_write_stats_files : now) + CHECK_WRITE_STATS_INTERVAL;
-    if (options->CellStatistics) {
-      time_t next_write =
-          rep_hist_buffer_stats_write(time_to_write_stats_files);
-      if (next_write && next_write < next_time_to_write_stats_files)
-        next_time_to_write_stats_files = next_write;
-    }
-    if (options->DirReqStatistics) {
-      time_t next_write = geoip_dirreq_stats_write(time_to_write_stats_files);
-      if (next_write && next_write < next_time_to_write_stats_files)
-        next_time_to_write_stats_files = next_write;
-    }
-    if (options->EntryStatistics) {
-      time_t next_write = geoip_entry_stats_write(time_to_write_stats_files);
-      if (next_write && next_write < next_time_to_write_stats_files)
-        next_time_to_write_stats_files = next_write;
-    }
-    if (options->ExitPortStatistics) {
-      time_t next_write = rep_hist_exit_stats_write(time_to_write_stats_files);
-      if (next_write && next_write < next_time_to_write_stats_files)
-        next_time_to_write_stats_files = next_write;
-    }
-    if (options->ConnDirectionStatistics) {
-      time_t next_write = rep_hist_conn_stats_write(time_to_write_stats_files);
-      if (next_write && next_write < next_time_to_write_stats_files)
-        next_time_to_write_stats_files = next_write;
-    }
-    if (options->BridgeAuthoritativeDir) {
-      time_t next_write = rep_hist_desc_stats_write(time_to_write_stats_files);
-      if (next_write && next_write < next_time_to_write_stats_files)
-        next_time_to_write_stats_files = next_write;
-    }
-    time_to_write_stats_files = next_time_to_write_stats_files;
-
-    /* Also commandeer this opportunity to log how our circuit handshake
-     * stats have been doing. */
-    if (public_server_mode(options))
-      rep_hist_log_circuit_handshake_stats(now);
+    /** NOTE: This refactor tests is more fragile than others as it is not
+    * possible to know which of the below triggered a change, so we test a
+    * range of expected time */
+    PERIODIC_RANGE_TEST(16, now - CHECK_WRITE_STATS_INTERVAL, now);
   }
 
   /* 1h. Check whether we should write bridge statistics to disk.
@@ -1741,9 +1758,8 @@ run_scheduled_events(time_t now)
         should_init_bridge_stats = 0;
       } else {
         /** NOTE: This refactor test is more fragile than others, relies on
-        * geoip_bridge_stats_write giving us the last time it refreshed if
-        * we feed it a time before its refresh time */
-        time_to_write_bridge_stats = INCREMENT_DELTA_AND_TEST(15, now, geoip_bridge_stats_write(0));
+        * implementation details from geoip_bridge_stats_write */
+        time_to_write_bridge_stats = INCREMENT_DELTA_AND_TEST(15, now, WRITE_STATS_INTERVAL);
       }
     }
   } else if (!should_init_bridge_stats) {
