@@ -1167,7 +1167,7 @@ check_listeners_callback(time_t now, const or_options_t *options)
 
   if (!net_is_disabled()) {
     retry_all_listeners(NULL, NULL, 0);
-    return 0;
+    return 60 + 1;
   }
 
   // No action taken
@@ -1193,7 +1193,7 @@ rotate_onion_keys_callback(time_t now, const or_options_t *options)
   if (advertised_server_mode() && !options->DisableNetwork)
     router_upload_dir_desc_to_dirservers(0);
 
-  return 0;
+  return MIN_ONION_KEY_LIFETIME + 1;
 }
 
 static int
@@ -1201,7 +1201,7 @@ reset_descriptor_download_failures_callback(time_t now,
                                             const or_options_t *options)
 {
   router_reset_descriptor_download_failures();
-  return 0;
+  return DESCRIPTOR_FAILURE_RESET_INTERVAL + 1;
 }
 
 #define RETRY_DNS_INTERVAL (10*60)
@@ -1212,7 +1212,7 @@ retry_dns_init_callback(time_t now, const or_options_t *options)
   /** XXXX Should cancel the timer once this succeeds? */
   if (server_mode(options) && has_dns_init_failed()) {
     dns_init();
-    return 0;
+    return RETRY_DNS_INTERVAL + 1;
   }
   return -1;
 }
@@ -1239,7 +1239,7 @@ launch_reachability_tests_callback(time_t now, const or_options_t *options)
   if (authdir_mode_tests_reachability(options) &&
       !net_is_disabled()) {
     dirserv_test_reachability(now);
-    return 0;
+    return REACHABILITY_TEST_INTERVAL + 1;
   }
 
   return -1;
@@ -1276,7 +1276,7 @@ shrink_memory_callback(time_t now, const or_options_t *options)
     });
   clean_cell_pool();
   buf_shrink_freelists(0);
-  return 0;
+  return MEM_SHRINK_INTERVAL + 1;
 }
 
 #define CHECK_V3_CERTIFICATE_INTERVAL (5*60)
@@ -1286,7 +1286,7 @@ static int
 check_v3_certificate_callback(time_t now, const or_options_t *options)
 {
   v3_authority_check_key_expiry();
-  return 0;
+  return CHECK_V3_CERTIFICATE_INTERVAL + 1;
 }
 
 /** 1d. Periodically, we discount older stability information so that new
@@ -1311,7 +1311,7 @@ save_stability_callback(time_t now, const or_options_t *options)
     }
 
     ran_once = 1;
-    return 0;
+    return SAVE_STABILITY_INTERVAL + 1;
   }
 
   return -1;
@@ -1333,7 +1333,7 @@ add_entropy_callback(time_t now, const or_options_t *options)
     ran_once = 1;
   }
 
-  return 0;
+  return ENTROPY_INTERVAL + 1;
 }
 
 #define CHECK_EXPIRED_NS_INTERVAL (2*60)
@@ -1351,7 +1351,7 @@ check_expired_network_status_callback(time_t now, const or_options_t *options)
     router_dir_info_changed();
   }
 
-  return 0;
+  return CHECK_EXPIRED_NS_INTERVAL + 1;
 }
 
 #define CLEAN_CACHES_INTERVAL (30*60)
@@ -1363,7 +1363,7 @@ clean_caches_callback(time_t now, const or_options_t *options)
   rend_cache_clean(now);
   rend_cache_clean_v2_descs_as_dir(now);
   microdesc_cache_rebuild(NULL, 0);
-  return 0;
+  return CLEAN_CACHES_INTERVAL + 1;
 }
 
 /** 1b. Every MAX_SSL_KEY_LIFETIME_INTERNAL seconds, we change our
@@ -1389,7 +1389,7 @@ rotate_x509_certificate_callback(time_t now, const or_options_t *options)
     * update the timer anyway. */
   }
 
-   return 0;
+   return MAX_SSL_KEY_LIFETIME_INTERNAL + 1;
 }
 
 /* 1h. Check whether we should write bridge statistics to disk.
@@ -1509,7 +1509,8 @@ check_descriptor_callback(time_t now, const or_options_t *options)
   networkstatus_v2_list_clean(now);
   /* Remove dead routers. */
   routerlist_remove_old_routers();
-  return 0;
+  /* Account for off by one */
+  return CHECK_DESCRIPTOR_INTERVAL + 1;
 }
 
 #define PORT_FORWARDING_CHECK_INTERVAL 5
@@ -1528,17 +1529,18 @@ check_port_forwarding_callback(time_t now, const or_options_t *options)
       SMARTLIST_FOREACH(ports_to_forward, char *, cp, tor_free(cp));
       smartlist_free(ports_to_forward);
     }
-    return 0;
+    return PORT_FORWARDING_CHECK_INTERVAL + 1;
   } else {
     return -1;
   }
 }
 
 /** Callback function for a periodic event to take action.
-* Return -1 to not update <b>lastActionTime</b>. If a
-* positive value is returned it will update the interval time.
-* If the returned value is larger than <b>now</b> then it is
-* assumed to be a future time to poll again. */
+* The return value influences the next time the function will get called.
+* Return -1 to not update <b>lastActionTime</b> and be polled again in
+* the next second. If a positive value is returned it will update the
+* interval time. If the returned value is larger than <b>now</b> then it
+* is assumed to be a future time to poll again. */
 typedef int (*periodic_event_helper_t)(time_t now,
                                       const or_options_t *options);
 
@@ -1573,34 +1575,31 @@ typedef struct periodic_event_item_t {
       exit(0); \
     } \
 
-/** Currently using <b>interval</b> +1 to mimic current behaviour */
-#define EVENT(fn, interval) { fn##_callback, (interval + 1), 0, NULL, #fn }
+/** events will get their interval from first execution */
+#define EVENT(fn) { fn##_callback, 0, 0, NULL, #fn }
 
 /** Table mapping events to their required interval.
-* Ordering is important if events have the same interval time.
-* Currently an interval of 0  will cause polling every 1 second
-* until the callback changes the interval time.
-* (0=1 is to account for the off by one error in other events) */
+* Ordering is important if events have the same interval time. */
 static periodic_event_item_t periodic_events[] = {
-  EVENT(check_listeners, 60),
-  EVENT(rotate_onion_keys, MIN_ONION_KEY_LIFETIME),
-  EVENT(reset_descriptor_download_failures, DESCRIPTOR_FAILURE_RESET_INTERVAL),
-  EVENT(retry_dns_init, RETRY_DNS_INTERVAL),
-  EVENT(try_getting_descriptors, GREEDY_DESCRIPTOR_RETRY_INTERVAL),
-  EVENT(launch_reachability_tests, REACHABILITY_TEST_INTERVAL),
-  EVENT(download_network_status, 0),
-  EVENT(shrink_memory, MEM_SHRINK_INTERVAL),
-  EVENT(check_v3_certificate, CHECK_V3_CERTIFICATE_INTERVAL),
-  EVENT(downrate_stability, 0),
-  EVENT(save_stability, SAVE_STABILITY_INTERVAL),
-  EVENT(add_entropy, ENTROPY_INTERVAL),
-  EVENT(check_expired_network_status, CHECK_EXPIRED_NS_INTERVAL),
-  EVENT(clean_caches, CLEAN_CACHES_INTERVAL),
-  EVENT(rotate_x509_certificate, MAX_SSL_KEY_LIFETIME_INTERNAL),
-  EVENT(write_bridge_stats, 0),
-  EVENT(write_stats_files, CHECK_WRITE_STATS_INTERVAL),
-  EVENT(check_descriptor, CHECK_DESCRIPTOR_INTERVAL),
-  EVENT(check_port_forwarding, PORT_FORWARDING_CHECK_INTERVAL),
+  EVENT(check_listeners),
+  EVENT(rotate_onion_keys),
+  EVENT(reset_descriptor_download_failures),
+  EVENT(retry_dns_init),
+  EVENT(try_getting_descriptors),
+  EVENT(launch_reachability_tests),
+  EVENT(download_network_status),
+  EVENT(shrink_memory),
+  EVENT(check_v3_certificate),
+  EVENT(downrate_stability),
+  EVENT(save_stability),
+  EVENT(add_entropy),
+  EVENT(check_expired_network_status),
+  EVENT(clean_caches),
+  EVENT(rotate_x509_certificate),
+  EVENT(write_bridge_stats),
+  EVENT(write_stats_files),
+  EVENT(check_descriptor),
+  EVENT(check_port_forwarding),
   { NULL, 0, 0, NULL, NULL }
 };
 #undef EVENT
@@ -1616,24 +1615,37 @@ periodic_event_dispatch(periodic_timer_t *timer, void *data)
   time_t now = time(NULL);
   const or_options_t *options = get_options();
   int r = event->fn(now, options);
+  int next_interval = 0;
 
   /** update the last run time if action was taken */
-  if (r >= 0) {
+  if (r==0) {
+    log_err(LD_BUG, "Invalid return value for periodic event from %s.",
+                      event->name);
+    exit(0);
+  } else if (r > 0) {
     event->lastActionTime = now;
 
     if (r >= now) {
       /** The function returned a future time that it wants to be polled again
       * at, subtract now to get the relative interval time */
-      r -= now;
+      next_interval = r - now;
+    } else {
+      next_interval = r;
     }
+  } else {
+    /** no action was taken, it is likely a precondition failed,
+    * we should reschedule for next second incase the precondition
+    * passes then */
+    next_interval = 1;
+  }
 
-    /** update the interval time if it's changed */
-    if (r > 0 && r != event->interval) {
-      struct timeval tv;
-      tv.tv_sec = r;
-      tv.tv_usec = 0;
-      periodic_timer_update_interval(event->timer, &tv);
-    }
+  /** update the interval time if it's changed */
+  if (next_interval != event->interval) {
+    struct timeval tv;
+    tv.tv_sec = next_interval;
+    tv.tv_usec = 0;
+    event->interval = next_interval;
+    periodic_timer_update_interval(event->timer, &tv);
   }
 
   log_info(LD_GENERAL, "Dispatching %s", event->name);
