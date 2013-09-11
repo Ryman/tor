@@ -1458,6 +1458,60 @@ write_stats_files_callback(time_t now, const or_options_t *options)
   return next_time + 1;
 }
 
+/** How often do we check whether part of our router info has changed in a
+ * way that would require an upload? That includes checking whether our IP
+ * address has changed. */
+#define CHECK_DESCRIPTOR_INTERVAL (60)
+
+ /** 2. Periodically, we consider force-uploading our descriptor
+   * (if we've passed our internal checks). */
+static int
+check_descriptor_callback(time_t now, const or_options_t *options)
+{
+  /* 2b. Once per CHECK_DESCRIPTOR_INTERVAL seconds, regenerate and upload
+  * the descriptor if the old one is inaccurate. */
+  if (options->DisableNetwork)
+    return -1;
+
+  static int dirport_reachability_count = 0;
+  static time_t time_to_recheck_bandwidth = 0;
+  check_descriptor_bandwidth_changed(now);
+  check_descriptor_ipaddress_changed(now);
+  mark_my_descriptor_dirty_if_too_old(now);
+  consider_publishable_server(0);
+  /* also, check religiously for reachability, if it's within the first
+   * 20 minutes of our uptime. */
+  if (server_mode(options) &&
+      (can_complete_circuit || !any_predicted_circuits(now)) &&
+      !we_are_hibernating()) {
+    if (stats_n_seconds_working < TIMEOUT_UNTIL_UNREACHABILITY_COMPLAINT) {
+      consider_testing_reachability(1, dirport_reachability_count==0);
+      if (++dirport_reachability_count > 5)
+        dirport_reachability_count = 0;
+    } else if (time_to_recheck_bandwidth < now) {
+      /* If we haven't checked for 12 hours and our bandwidth estimate is
+       * low, do another bandwidth test. This is especially important for
+       * bridges, since they might go long periods without much use. */
+      const routerinfo_t *me = router_get_my_routerinfo();
+      if (time_to_recheck_bandwidth && me &&
+          me->bandwidthcapacity < me->bandwidthrate &&
+          me->bandwidthcapacity < 51200) {
+        reset_bandwidth_test();
+      }
+#define BANDWIDTH_RECHECK_INTERVAL (12*60*60)
+      time_to_recheck_bandwidth = now + BANDWIDTH_RECHECK_INTERVAL;
+    }
+  }
+
+  /* If any networkstatus documents are no longer recent, we need to
+   * update all the descriptors' running status. */
+  /* purge obsolete entries */
+  networkstatus_v2_list_clean(now);
+  /* Remove dead routers. */
+  routerlist_remove_old_routers();
+  return 0;
+}
+
 /** Callback function for a periodic event to take action.
 * Return -1 to not update <b>lastActionTime</b>. If a
 * positive value is returned it will update the interval time.
@@ -1523,6 +1577,7 @@ static periodic_event_item_t periodic_events[] = {
   EVENT(rotate_x509_certificate, MAX_SSL_KEY_LIFETIME_INTERNAL),
   EVENT(write_bridge_stats, 0),
   EVENT(write_stats_files, CHECK_WRITE_STATS_INTERVAL),
+  EVENT(check_descriptor, CHECK_DESCRIPTOR_INTERVAL),
   { NULL, 0, 0, NULL, NULL }
 };
 #undef EVENT
@@ -1613,7 +1668,6 @@ run_scheduled_events(time_t now)
   static time_t time_to_downrate_stability = 0;
   static time_t time_to_save_stability = 0;
   static time_t time_to_clean_caches = 0;
-  static time_t time_to_recheck_bandwidth = 0;
   static time_t time_to_check_for_expired_networkstatus = 0;
   static time_t time_to_write_stats_files = 0;
   static time_t time_to_write_bridge_stats = 0;
@@ -1789,50 +1843,10 @@ run_scheduled_events(time_t now)
   /** 2. Periodically, we consider force-uploading our descriptor
    * (if we've passed our internal checks). */
 
-/** How often do we check whether part of our router info has changed in a
- * way that would require an upload? That includes checking whether our IP
- * address has changed. */
-#define CHECK_DESCRIPTOR_INTERVAL (60)
-
   /* 2b. Once per minute, regenerate and upload the descriptor if the old
    * one is inaccurate. */
   if (time_to_check_descriptor < now && !options->DisableNetwork) {
-    static int dirport_reachability_count = 0;
-    time_to_check_descriptor = now + CHECK_DESCRIPTOR_INTERVAL;
-    check_descriptor_bandwidth_changed(now);
-    check_descriptor_ipaddress_changed(now);
-    mark_my_descriptor_dirty_if_too_old(now);
-    consider_publishable_server(0);
-    /* also, check religiously for reachability, if it's within the first
-     * 20 minutes of our uptime. */
-    if (is_server &&
-        (can_complete_circuit || !any_predicted_circuits(now)) &&
-        !we_are_hibernating()) {
-      if (stats_n_seconds_working < TIMEOUT_UNTIL_UNREACHABILITY_COMPLAINT) {
-        consider_testing_reachability(1, dirport_reachability_count==0);
-        if (++dirport_reachability_count > 5)
-          dirport_reachability_count = 0;
-      } else if (time_to_recheck_bandwidth < now) {
-        /* If we haven't checked for 12 hours and our bandwidth estimate is
-         * low, do another bandwidth test. This is especially important for
-         * bridges, since they might go long periods without much use. */
-        const routerinfo_t *me = router_get_my_routerinfo();
-        if (time_to_recheck_bandwidth && me &&
-            me->bandwidthcapacity < me->bandwidthrate &&
-            me->bandwidthcapacity < 51200) {
-          reset_bandwidth_test();
-        }
-#define BANDWIDTH_RECHECK_INTERVAL (12*60*60)
-        time_to_recheck_bandwidth = now + BANDWIDTH_RECHECK_INTERVAL;
-      }
-    }
-
-    /* If any networkstatus documents are no longer recent, we need to
-     * update all the descriptors' running status. */
-    /* purge obsolete entries */
-    networkstatus_v2_list_clean(now);
-    /* Remove dead routers. */
-    routerlist_remove_old_routers();
+    time_to_check_descriptor = INCREMENT_DELTA_AND_TEST(17, now, CHECK_DESCRIPTOR_INTERVAL);
   }
 
   /* 2c. Every minute (or every second if TestingTorNetwork), check
