@@ -1512,6 +1512,28 @@ check_descriptor_callback(time_t now, const or_options_t *options)
   return 0;
 }
 
+#define PORT_FORWARDING_CHECK_INTERVAL 5
+/** 11. Periodically check the port forwarding app */
+static int
+check_port_forwarding_callback(time_t now, const or_options_t *options)
+{
+  if (!net_is_disabled() && options->PortForwarding &&
+                            server_mode(options)) {
+    smartlist_t *ports_to_forward = get_list_of_ports_to_forward();
+    if (ports_to_forward) {
+      tor_check_port_forwarding(options->PortForwardingHelper,
+                                ports_to_forward,
+                                now);
+
+      SMARTLIST_FOREACH(ports_to_forward, char *, cp, tor_free(cp));
+      smartlist_free(ports_to_forward);
+    }
+    return 0;
+  } else {
+    return -1;
+  }
+}
+
 /** Callback function for a periodic event to take action.
 * Return -1 to not update <b>lastActionTime</b>. If a
 * positive value is returned it will update the interval time.
@@ -1578,6 +1600,7 @@ static periodic_event_item_t periodic_events[] = {
   EVENT(write_bridge_stats, 0),
   EVENT(write_stats_files, CHECK_WRITE_STATS_INTERVAL),
   EVENT(check_descriptor, CHECK_DESCRIPTOR_INTERVAL),
+  EVENT(check_port_forwarding, PORT_FORWARDING_CHECK_INTERVAL),
   { NULL, 0, 0, NULL, NULL }
 };
 #undef EVENT
@@ -1962,17 +1985,8 @@ run_scheduled_events(time_t now)
       time_to_check_port_forwarding < now &&
       options->PortForwarding &&
       is_server) {
-#define PORT_FORWARDING_CHECK_INTERVAL 5
-    smartlist_t *ports_to_forward = get_list_of_ports_to_forward();
-    if (ports_to_forward) {
-      tor_check_port_forwarding(options->PortForwardingHelper,
-                                ports_to_forward,
-                                now);
-
-      SMARTLIST_FOREACH(ports_to_forward, char *, cp, tor_free(cp));
-      smartlist_free(ports_to_forward);
-    }
-    time_to_check_port_forwarding = now+PORT_FORWARDING_CHECK_INTERVAL;
+    time_to_check_port_forwarding = INCREMENT_DELTA_AND_TEST(18, now,
+                                              PORT_FORWARDING_CHECK_INTERVAL)
   }
 
   /** 11b. check pending unconfigured managed proxies */
