@@ -1742,7 +1742,8 @@ run_scheduled_events(time_t now)
   if (!last_rotated_x509_certificate)
     last_rotated_x509_certificate = now;
   if (last_rotated_x509_certificate+MAX_SSL_KEY_LIFETIME_INTERNAL < now) {
-    time_t ignore = INCREMENT_DELTA_AND_TEST(14, now, MAX_SSL_KEY_LIFETIME_INTERNAL);
+    time_t ignore = INCREMENT_DELTA_AND_TEST(14, now,
+                                                MAX_SSL_KEY_LIFETIME_INTERNAL);
     (void)ignore;
     last_rotated_x509_certificate = now;
   }
@@ -1808,12 +1809,14 @@ run_scheduled_events(time_t now)
   if (should_record_bridge_info(options)) {
     if (time_to_write_bridge_stats < now) {
       if (should_init_bridge_stats) {
-        time_to_write_bridge_stats = INCREMENT_DELTA_AND_TEST(15, now, WRITE_STATS_INTERVAL);
+        time_to_write_bridge_stats = INCREMENT_DELTA_AND_TEST(15, now,
+                                                        WRITE_STATS_INTERVAL);
         should_init_bridge_stats = 0;
       } else {
         /** NOTE: This refactor test is more fragile than others, relies on
         * implementation details from geoip_bridge_stats_write */
-        time_to_write_bridge_stats = INCREMENT_DELTA_AND_TEST(15, now, WRITE_STATS_INTERVAL);
+        time_to_write_bridge_stats = INCREMENT_DELTA_AND_TEST(15, now,
+                                                        WRITE_STATS_INTERVAL);
       }
     }
   } else if (!should_init_bridge_stats) {
@@ -1846,7 +1849,8 @@ run_scheduled_events(time_t now)
   /* 2b. Once per minute, regenerate and upload the descriptor if the old
    * one is inaccurate. */
   if (time_to_check_descriptor < now && !options->DisableNetwork) {
-    time_to_check_descriptor = INCREMENT_DELTA_AND_TEST(17, now, CHECK_DESCRIPTOR_INTERVAL);
+    time_to_check_descriptor = INCREMENT_DELTA_AND_TEST(17, now,
+                                                  CHECK_DESCRIPTOR_INTERVAL);
   }
 
   /* 2c. Every minute (or every second if TestingTorNetwork), check
