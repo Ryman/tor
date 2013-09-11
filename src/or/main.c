@@ -1535,6 +1535,36 @@ check_port_forwarding_callback(time_t now, const or_options_t *options)
   }
 }
 
+#define BRIDGE_STATUSFILE_INTERVAL (30*60)
+/** 10. write bridge networkstatus file to disk */
+static int
+write_bridge_status_file_callback(time_t now, const or_options_t *options)
+{
+  if (!options->BridgeAuthoritativeDir)
+    return -1;
+
+  networkstatus_dump_bridge_status_to_file(now);
+  return BRIDGE_STATUSFILE_INTERVAL + 1;
+}
+
+/** 12. write the heartbeat message */
+static int
+write_heartbeat_callback(time_t now, const or_options_t *options)
+{
+  static int ran_once = 0;
+
+  if (options->HeartbeatPeriod) {
+    if (ran_once) /* don't log the first heartbeat */
+      log_heartbeat(now);
+    else
+      ran_once = 1;
+
+    return options->HeartbeatPeriod + 1;
+  }
+
+  return -1;
+}
+
 /** Callback function for a periodic event to take action.
 * The return value influences the next time the function will get called.
 * Return -1 to not update <b>lastActionTime</b> and be polled again in
@@ -1600,6 +1630,8 @@ static periodic_event_item_t periodic_events[] = {
   EVENT(write_stats_files),
   EVENT(check_descriptor),
   EVENT(check_port_forwarding),
+  EVENT(write_bridge_status_file),
+  EVENT(write_heartbeat),
   { NULL, 0, 0, NULL, NULL }
 };
 #undef EVENT
@@ -1987,9 +2019,8 @@ run_scheduled_events(time_t now)
   /** 10. write bridge networkstatus file to disk */
   if (options->BridgeAuthoritativeDir &&
       time_to_write_bridge_status_file < now) {
-    networkstatus_dump_bridge_status_to_file(now);
-#define BRIDGE_STATUSFILE_INTERVAL (30*60)
-    time_to_write_bridge_status_file = now+BRIDGE_STATUSFILE_INTERVAL;
+    time_to_write_bridge_status_file = INCREMENT_DELTA_AND_TEST(19, now,
+                                                  BRIDGE_STATUSFILE_INTERVAL);
   }
 
   /** 11. check the port forwarding app */
@@ -2008,9 +2039,8 @@ run_scheduled_events(time_t now)
   /** 12. write the heartbeat message */
   if (options->HeartbeatPeriod &&
       time_to_next_heartbeat <= now) {
-    if (time_to_next_heartbeat) /* don't log the first heartbeat */
-      log_heartbeat(now);
-    time_to_next_heartbeat = now+options->HeartbeatPeriod;
+    time_to_next_heartbeat = INCREMENT_DELTA_AND_TEST(20, now,
+                                                    options->HeartbeatPeriod);
   }
 }
 
